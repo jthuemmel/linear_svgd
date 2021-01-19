@@ -14,11 +14,11 @@ def squared_distance(x):
     return dist_mat
 
 #code to generate random covariance matrices with a given scale
-def random_covariance(D,Lmin=0.1,Lmax=10):
+def random_covariance(D,Lmin=1,Lmax=1):
     #generate diagonal matrix with eigenvalues in the desired range (i.e. [1e-1,1e1])
-    L = torch.eye(D) * torch.distributions.Uniform(Lmin,Lmax).sample([D])
+    L = torch.eye(D) * (torch.rand([D])*(Lmax - Lmin) + Lmin)
     #generate a random unitary matrix (use QR decomposition to obtain)
-    Q,R = torch.qr(torch.rand([D,D]))
+    Q,_ = torch.qr(torch.distributions.MultivariateNormal(torch.zeros(D),torch.eye(D)).sample([D]))
     #obtain the desired covariance by multiplication:
     sigma = torch.mm(torch.mm(Q,L),Q.T)
     return sigma
