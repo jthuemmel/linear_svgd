@@ -51,7 +51,7 @@ def linear_kernel(x,N):
     dkxx = (N+1) * x
     return kxx, dkxx
 
-def svgd(x0,p,kernel = 'linear',num_iter = 1000, eta = 1e-2,history=False):
+def svgd(x0,p,kernel = 'linear',num_iter = 10000,optimizer = None,eta = 1e-3, history=False):
     x = x0.clone().detach()
     N = x.shape[0]
     D = x.shape[1]
@@ -75,13 +75,16 @@ def svgd(x0,p,kernel = 'linear',num_iter = 1000, eta = 1e-2,history=False):
         logpx = p.log_prob(x)
         #calculate the derivative of the log-likelihood wrt x
         logpx.sum().backward(retain_graph = True)
-        dxlogpx = x.grad.clone()
-        #zero x.grad for later use
+        dxlogpx = x.grad.clone().detach()
+        #zero x.grad for later use (just in case)
         x.grad.data.zero_()    
         #calculate optimal perturbation direction
-        phi = (1/N) * (torch.mm(kxx,dxlogpx) + dkxx)
+        phi = (-1/N) *( torch.mm(kxx,dxlogpx) + dkxx)
         #make a step of gradient descent
-        x_new = x + eta * phi
+        if optimizer:
+            x_new = optimizer(x,phi)
+        else:
+            x_new = x - eta * phi
         
         if history:
             x_history[it] = x_new.clone().detach()
@@ -106,8 +109,10 @@ def gpf(x0,p,num_iter=1000,eta1=0.1,eta2=0.1,history=False):
         log_px = -p.log_prob(x) 
         log_px.sum().backward(retain_graph = True)
         #compute g and g_
-        g = x.grad
+        g = x.grad.clone()
         g_ = torch.mean(g,0)
+        #zero x.grad for later use
+        x.grad.data.zero_() 
         #center the particles
         x_m = x - torch.mean(x,0)
         #calculate Matrix A particle-wise
@@ -126,7 +131,53 @@ def gpf(x0,p,num_iter=1000,eta1=0.1,eta2=0.1,history=False):
         return x_history
     else:
         return x
-
+class SGD():
+    
+    def __init__(self, eta=0.01, gamma=-1):
+        #eta -> default learning rate
+        #gamma -> momentum term, if gamma < 0 no momentum is used
+        #vel -> momentum based velocity term
+        
+        self.__dict__.update(locals())
+        self.vel = None
+        
+    def __call__(self,x,g):
+        if type(self.vel) == type(None):
+            self.vel = torch.zeros((g.shape))
+            
+        if 0 < self.gamma < 1: #if a valid momentum is given 
+            self.vel = self.vel * self.gamma + self.eta * g #calculate the velocity
+            x_new = x - self.vel #update x with the velocity term
+            
+        else: #if no valid momentum is given
+            x_new = x - self.eta * g #standard gradient descent update
+            
+        return x_new
+    
+class AdaGrad():
+    
+    def __init__(self,eta = 0.01,alpha = -1, epsilon = 1e-8):
+        #eta -> default learning rate
+        #alpha -> fraction of gradient to accumulate (RMSprop vs AdaGrad)
+        #epsilon -> correction term to avoid division by zero
+        self.__dict__.update(locals())
+        self.acc = None
+    
+    def __call__(self,x,g):
+        
+        if type(self.acc) == type(None):
+            self.acc = torch.zeros((g.shape))
+        #accumulate the gradient
+        if 0 < self.alpha < 1:
+            #RMSprop
+            self.acc = self.acc*self.alpha + (1-self.alpha)*g**2
+        else:
+            #AdaGrad
+            self.acc = self.acc + g**2
+        #update with adapted learning rate
+        x_new = x - (self.eta / torch.sqrt(self.epsilon + self.acc)) * g
+        
+        return x_new
 
 def animate_trajectory(theta_hist,target_dist,amin,amax):
     
@@ -169,3 +220,5 @@ def animate_trajectory(theta_hist,target_dist,amin,amax):
     anim = animation.FuncAnimation(fig, animate, init_func=init,
                                    frames=x_hist.shape[0], interval=20, blit=False)
     return anim
+
+
