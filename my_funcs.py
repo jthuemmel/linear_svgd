@@ -7,12 +7,6 @@ def custom_round(x,dec):
     else:
         return (x * 10**dec).round()/10**dec
 
-#efficient implementation of squared distance calculation (faster than cdist**2)
-def squared_distance(x):
-    norm = (x ** 2).sum(1).view(-1, 1)
-    dist_mat = (norm + norm.view(1, -1)) - 2.0 * torch.mm(x , x.t())
-    return dist_mat
-
 #code to generate random covariance matrices with a given scale
 def random_covariance(D,Lmin=1,Lmax=1):
     #generate diagonal matrix with eigenvalues in the desired range (i.e. [1e-1,1e1])
@@ -29,6 +23,64 @@ def estimate_cov(x):
     m = torch.mean(x,0)
     assert N > 1
     return torch.mm((x-m).T,(x-m))/(N)
+    
+class SGD():
+    
+    def __init__(self, eta=0.01, gamma=-1):
+        #eta -> default learning rate
+        #gamma -> momentum term, if gamma < 0 no momentum is used
+        #vel -> momentum based velocity term
+        
+        self.__dict__.update(locals())
+        self.vel = None
+        
+    def __call__(self,x,g):
+        if type(self.vel) == type(None):
+            self.vel = torch.zeros_like(g)
+            
+        if 0 < self.gamma < 1: #if a valid momentum is given 
+            self.vel = self.vel * self.gamma + self.eta * g #calculate the velocity
+            x_new = x - self.vel #update x with the velocity term
+            
+        else: #if no valid momentum is given
+            x_new = x - self.eta * g #standard gradient descent update
+            
+        return x_new
+
+class AdaGrad():
+    
+    def __init__(self,eta = 0.01,alpha = -1, epsilon = 1e-8):
+        #eta -> default learning rate
+        #alpha -> fraction of gradient to accumulate (RMSprop vs AdaGrad)
+        #epsilon -> correction term to avoid division by zero
+        self.__dict__.update(locals())
+        self.acc = None
+    
+    def __call__(self,x,g):
+        
+        if type(self.acc) == type(None):
+            self.acc = torch.zeros_like(g)
+            
+        #accumulate the gradient
+        if 0 < self.alpha < 1:
+            #RMSprop
+            #self.acc = self.acc*self.alpha + (1-self.alpha)*g**2
+            self.acc = self.acc.mul(self.alpha).addcmul(g,g,value=1-self.alpha)
+        else:
+            #AdaGrad
+            #self.acc = self.acc + g**2
+            self.acc += g.square()
+            
+        #take the root of the accumulated gradient and add a small correction term
+        #RMS = self.acc.sqrt().add(self.epsilon)
+        #update with adapted learning rate: x <- x-eta*(g/RMS)
+        return x.addcdiv(g,self.acc.sqrt().add(self.epsilon),value = -self.eta)
+           
+#efficient implementation of squared distance calculation (faster than cdist**2)
+def squared_distance(x):
+    norm = (x ** 2).sum(1).view(-1, 1)
+    dist_mat = (norm + norm.view(1, -1)) - 2.0 * torch.mm(x , x.t())
+    return dist_mat
 
 def rbf_kernel(x,N,h=-1):
     #pairwise squared euclidean distances
@@ -47,8 +99,8 @@ def rbf_kernel(x,N,h=-1):
 def linear_kernel(x,N):
     #linear kernel is defined as x * x.T + c
     kxx = torch.mm(x,x.T)+torch.ones([N,N])
-    #vectorized derivative
-    dkxx = (N+1) * x
+    #vectorized derivative 
+    dkxx = N * x #N or N+1 ??
     return kxx, dkxx
 
 def svgd(x0,p,kernel = 'linear',num_iter = 10000,optimizer = None,eta = 1e-3, history=False):
@@ -131,53 +183,32 @@ def gpf(x0,p,num_iter=1000,eta1=0.1,eta2=0.1,history=False):
         return x_history
     else:
         return x
-class SGD():
     
-    def __init__(self, eta=0.01, gamma=-1):
-        #eta -> default learning rate
-        #gamma -> momentum term, if gamma < 0 no momentum is used
-        #vel -> momentum based velocity term
-        
-        self.__dict__.update(locals())
-        self.vel = None
-        
-    def __call__(self,x,g):
-        if type(self.vel) == type(None):
-            self.vel = torch.zeros((g.shape))
-            
-        if 0 < self.gamma < 1: #if a valid momentum is given 
-            self.vel = self.vel * self.gamma + self.eta * g #calculate the velocity
-            x_new = x - self.vel #update x with the velocity term
-            
-        else: #if no valid momentum is given
-            x_new = x - self.eta * g #standard gradient descent update
-            
-        return x_new
+#a function to compute the RMSE of Covariance and Mean and the Trace error    
+def evaluate(x,p):
+    #x contains the particle positions
+    #p contains the target distribution
     
-class AdaGrad():
-    
-    def __init__(self,eta = 0.01,alpha = -1, epsilon = 1e-8):
-        #eta -> default learning rate
-        #alpha -> fraction of gradient to accumulate (RMSprop vs AdaGrad)
-        #epsilon -> correction term to avoid division by zero
-        self.__dict__.update(locals())
-        self.acc = None
-    
-    def __call__(self,x,g):
+    #if x contains history information, compute the errors at each iteration
+    if len(x.shape) > 2:
+        means = torch.mean(x,(1,2))
+        mean_rmse = torch.mean((means - p.mean).square(),1).sqrt()
         
-        if type(self.acc) == type(None):
-            self.acc = torch.zeros((g.shape))
-        #accumulate the gradient
-        if 0 < self.alpha < 1:
-            #RMSprop
-            self.acc = self.acc*self.alpha + (1-self.alpha)*g**2
-        else:
-            #AdaGrad
-            self.acc = self.acc + g**2
-        #update with adapted learning rate
-        x_new = x - (self.eta / torch.sqrt(self.epsilon + self.acc)) * g
+        cov_rmse = torch.zeros((x.shape[0]))
+        trace_err = torch.zeros((x.shape[0]))
+        for i in range(x.shape[0]):
+            cov = estimate_cov(x[i])
+            cov_rmse[i] = torch.mean((cov - p.covariance_matrix).square()).sqrt()
+            trace_err[i] = (cov - p.covariance_matrix).trace().abs()
+    else:
+        cov = estimate_cov(x)
+        mean = torch.mean(x,0)
         
-        return x_new
+        mean_rmse = torch.mean((mean - p.mean).square()).sqrt()
+        cov_rmse = torch.mean((cov - p.covariance_matrix).square()).sqrt()
+        trace_err = (cov - p.covariance_matrix).trace().abs()
+        
+    return mean_rmse, cov_rmse, trace_err
 
 def animate_trajectory(theta_hist,target_dist,amin,amax):
     
