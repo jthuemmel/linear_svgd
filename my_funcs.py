@@ -51,7 +51,32 @@ class SGD():
             x_new = x - self.eta * g #standard gradient descent update
             
         return x_new
-
+    
+class Adam():
+    
+    def __init__(self,eta = 0.001, beta1 = 0.9, beta2 = 0.999, eps = 1e-8):
+        self.__dict__.update(locals())
+        self.v = None
+        self.m = None
+        self.t = 0
+    
+    def __call__(self,x,g):
+        
+        if type(self.v) == type(None):
+            self.v = torch.zeros_like(g)
+        if type(self.m) == type(None):
+            self.m = torch.zeros_like(g)
+            
+        self.t += 1
+        
+        self.m = self.beta1*self.m + (1-self.beta1)*g
+        mt = self.m / (1-self.beta1**self.t)
+        
+        self.v = self.beta2*self.v + (1-self.beta2)*g.square()
+        vt = self.v / (1-self.beta2**self.t)
+        
+        return x - eta * mt / (vt.sqrt() + self.eps)
+    
 class AdaGrad():
     
     def __init__(self,eta = 0.01,alpha = -1, epsilon = 1e-8):
