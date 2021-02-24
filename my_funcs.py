@@ -8,9 +8,14 @@ def custom_round(x,dec):
         return (x * 10**dec).round()/10**dec
 
 #code to generate random covariance matrices with a given scale
-def random_covariance(D,Lmin=1,Lmax=1):
+def random_covariance(D,Lmin=1,Lmax=1,uniform = False):
     #generate diagonal matrix with eigenvalues in the desired range (i.e. [1e-1,1e1])
-    L = torch.eye(D) * (torch.rand([D])*(Lmax - Lmin) + Lmin)
+    if uniform:
+        #elements are distributed evenly in log-space
+        L = torch.eye(D) * torch.pow(10,torch.log10(torch.div(Lmax,Lmin))*torch.linspace(0,D-1,D).div(D-1) -1)
+    else:
+        #elements are sampled uniformly in the appropriate range
+        L = torch.eye(D) * (torch.rand([D])*(Lmax - Lmin) + Lmin)
     #generate a random unitary matrix (use QR decomposition to obtain)
     Q,_ = torch.qr(torch.distributions.MultivariateNormal(torch.zeros(D),torch.eye(D)).sample([D]))
     #obtain the desired covariance by multiplication:
@@ -20,7 +25,7 @@ def random_covariance(D,Lmin=1,Lmax=1):
 #implementation of un-corrected covariance for torch
 def estimate_cov(x):
     N = x.shape[0]
-    m = torch.mean(x,0)
+    m = x.mean(dim = 0)
     assert N > 1
     return torch.mm((x-m).T,(x-m))/(N)
     
@@ -151,10 +156,8 @@ def gpf(x0,p,num_iter=1000,eta1=0.1,eta2=0.1,history=False):
     x = x0.clone().detach()
     N = x.shape[0]
     D = x.shape[1]
-    
     if history:
         x_history = torch.zeros((num_iter,N,D))
-        
     for j in range(num_iter):
         #calculate score
         x.requires_grad = True
@@ -162,23 +165,18 @@ def gpf(x0,p,num_iter=1000,eta1=0.1,eta2=0.1,history=False):
         log_px.sum().backward(retain_graph = True)
         #compute g and g_
         g = x.grad.clone()
-        g_ = torch.mean(g,0)
+        g_ = g.mean(dim = 0)
         #zero x.grad for later use
-        x.grad.data.zero_() 
+        x.grad.data.zero_()
         #center the particles
-        x_m = x - torch.mean(x,0)
-        #calculate Matrix A particle-wise
-        a = torch.zeros([D,D])
-        for i in range(N):
-            a += torch.mm(g[i].view(D,1),x_m[i].view(1,D))
-        A = a/N - torch.eye(D)
+        x_m = x - x.mean(dim = 0)
+        #calculate Matrix A vectorised
+        A = (1/N) * torch.mm(g.T,x_m) - torch.eye(D)
         #update particles
         x_new = x - eta1*g_.view(1,D) - eta2*torch.mm(x_m,A) 
         x = x_new.clone().detach()
-        
         if history:
             x_history[j] = x_new.clone().detach()
-            
     if history:
         return x_history
     else:
@@ -191,21 +189,19 @@ def evaluate(x,p):
     
     #if x contains history information, compute the errors at each iteration
     if len(x.shape) > 2:
-        means = torch.mean(x,(1,2))
-        mean_rmse = torch.mean((means - p.mean).square(),1).sqrt()
-        
+        mean_rmse = (x.mean(dim=1) - p.mean).square().mean(dim=1).sqrt()        
         cov_rmse = torch.zeros((x.shape[0]))
         trace_err = torch.zeros((x.shape[0]))
         for i in range(x.shape[0]):
             cov = estimate_cov(x[i])
-            cov_rmse[i] = torch.mean((cov - p.covariance_matrix).square()).sqrt()
+            cov_rmse[i] = (cov - p.covariance_matrix).square().mean().sqrt()
             trace_err[i] = (cov - p.covariance_matrix).trace().abs()
     else:
         cov = estimate_cov(x)
         mean = torch.mean(x,0)
         
-        mean_rmse = torch.mean((mean - p.mean).square()).sqrt()
-        cov_rmse = torch.mean((cov - p.covariance_matrix).square()).sqrt()
+        mean_rmse = (mean - p.mean).square().mean().sqrt()
+        cov_rmse = (cov - p.covariance_matrix).square().mean().sqrt()
         trace_err = (cov - p.covariance_matrix).trace().abs()
         
     return mean_rmse, cov_rmse, trace_err
