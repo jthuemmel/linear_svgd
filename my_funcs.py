@@ -75,7 +75,7 @@ class Adam():
         self.v = self.beta2*self.v + (1-self.beta2)*g.square()
         vt = self.v / (1-self.beta2**self.t)
         
-        return x - eta * mt / (vt.sqrt() + self.eps)
+        return x - self.eta * mt / (vt.sqrt() + self.eps)
     
 class AdaGrad():
     
@@ -187,21 +187,20 @@ def gpf(x0,p,num_iter=1000,eta1=0.1,eta2=0.1,history=False):
         #calculate score
         x.requires_grad = True
         log_px = -p.log_prob(x) 
-        log_px.sum().backward(retain_graph = True)
-        #compute g and g_
-        g = x.grad.clone()
+        log_px.sum().backward()
+        g = x.grad
         g_ = g.mean(dim = 0)
-        #zero x.grad for later use
-        x.grad.data.zero_()
         #center the particles
         x_m = x - x.mean(dim = 0)
-        #calculate Matrix A vectorised
+        #calculate A in vectorized form
         A = (1/N) * torch.mm(g.T,x_m) - torch.eye(D)
-        #update particles
-        x_new = x - eta1*g_.view(1,D) - eta2*torch.mm(x_m,A) 
-        x = x_new.clone().detach()
+        #gradient descent update
+        x_new = x.T - eta1*g_.view(D,1) - eta2*torch.mm(A,x_m.T) #we need to transpose x here so we can do A(x-m)
+
+        x = x_new.clone().detach().T #now we need to transpose back so everything else still matches
+        
         if history:
-            x_history[j] = x_new.clone().detach()
+            x_history[j] = x.clone().detach()
     if history:
         return x_history
     else:
